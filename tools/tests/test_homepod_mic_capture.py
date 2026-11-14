@@ -11,7 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,7 +22,7 @@ PROFILE = capture.PROFILES["main-telephony"]
 HOST = "127.0.0.1"
 
 
-def rtp(samples=(1, -2), seq=1, timestamp=100, ssrc=42, flags=0x80, payload_type=96):
+def rtp(samples=(1, -2), seq=1, timestamp=100, ssrc=42, flags=0x80, payload_type=100):
     return struct.pack("!BBHII", flags, payload_type, seq, timestamp, ssrc) + struct.pack(f"!{len(samples)}h", *samples)
 
 
@@ -118,16 +118,16 @@ class NegotiationTests(unittest.TestCase):
 
 class PacketTests(unittest.TestCase):
     def test_big_endian_network_pcm_becomes_little_endian_wav(self):
-        seq, timestamp, ssrc, pcm = capture.pcm_from_rtp(rtp())
+        seq, timestamp, ssrc, pcm = capture.pcm_from_rtp(rtp(), 100)
         self.assertEqual((seq, timestamp, ssrc), (1, 100, 42))
         self.assertEqual(pcm, struct.pack("<hh", 1, -2))
 
     def test_csrc_extension_and_padding(self):
-        header = struct.pack("!BBHII", 0xB1, 96, 1, 100, 42)
+        header = struct.pack("!BBHII", 0xB1, 100, 1, 100, 42)
         csrc = struct.pack("!I", 99)
         extension = struct.pack("!HHI", 0xBEDE, 1, 0)
         packet = header + csrc + extension + struct.pack("!hh", 1, -2) + b"\x00\x02"
-        self.assertEqual(capture.pcm_from_rtp(packet)[3], struct.pack("<hh", 1, -2))
+        self.assertEqual(capture.pcm_from_rtp(packet, 100)[3], struct.pack("<hh", 1, -2))
 
     def test_malformed_packets_rejected(self):
         packets = (b"", b"x" * 8, rtp(flags=0x40), rtp(payload_type=83),
@@ -135,7 +135,79 @@ class PacketTests(unittest.TestCase):
                    rtp(flags=0xA0)[:-1] + b"\x00", rtp(flags=0xA0)[:-1] + b"\xFF")
         for packet in packets:
             with self.subTest(packet=packet), self.assertRaises(ValueError):
-                capture.pcm_from_rtp(packet)
+                capture.pcm_from_rtp(packet, 100)
+
+    def test_payload_type_96_remains_supported_when_requested(self):
+        packet = rtp(payload_type=96)
+        self.assertEqual(capture.pcm_from_rtp(packet)[3], struct.pack("<hh", 1, -2))
+        with self.assertRaisesRegex(ValueError, "Different RTP payload"):
+            capture.pcm_from_rtp(packet, 100)
+
+    def test_observation_parses_odd_unknown_codec_payload(self):
+        packet = rtp(payload_type=111) + b'\x01'
+        self.assertEqual(capture.parse_rtp(packet)[0], 111)
+        with self.assertRaises(ValueError):
+            capture.pcm_from_rtp(packet, 111)
+
+    def test_extension_past_packet_end_is_rejected(self):
+        packet = rtp(flags=0x90)[:12] + struct.pack('!HH', 0xBEDE, 100)
+        with self.assertRaisesRegex(ValueError, 'Truncated RTP extension data'):
+            capture.parse_rtp(packet)
+
+    def test_rtcp_cannot_be_counted_as_rtp_audio(self):
+        for kind in (192, 200, 212, 223):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                capture.parse_rtp(rtp(payload_type=kind))
+
+
+class ObservationTests(unittest.TestCase):
+    def test_observer_counts_96_100_and_other_payload_types(self):
+        observer = capture.RtpObserver(HOST)
+        observer.enabled = True
+        for kind in (96, 100, 111, 100 | 0x80):
+            observer.datagram_received(rtp(payload_type=kind), (HOST, 12345))
+        self.assertEqual(observer.packets, 4)
+        self.assertEqual(observer.datagrams, 4)
+        self.assertEqual(observer.payload_types, {'96': 1, '100': 2, '111': 1})
+        self.assertEqual(observer.frames, 0)
+        self.assertTrue(observer.first_packet.is_set())
+
+    def test_disabled_and_foreign_datagrams_do_not_count_as_target(self):
+        observer = capture.RtpObserver(HOST)
+        observer.datagram_received(rtp(), (HOST, 12345))
+        observer.enabled = True
+        observer.datagram_received(rtp(), ('127.0.0.2', 12345))
+        self.assertEqual((observer.packets, observer.datagrams, observer.byte_count), (0, 0, 0))
+        self.assertEqual(observer.ignored, 1)
+        self.assertFalse(observer.first_packet.is_set())
+
+    def test_malformed_target_traffic_is_visible_without_becoming_audio(self):
+        observer = capture.RtpObserver(HOST)
+        observer.enabled = True
+        packets = [b'not audio', rtp(payload_type=200), rtp(flags=0x8F)]
+        for packet in packets:
+            observer.datagram_received(packet, (HOST, 12345))
+        self.assertEqual(observer.datagrams, 3)
+        self.assertEqual(observer.byte_count, sum(map(len, packets)))
+        self.assertEqual(observer.ignored, 3)
+        self.assertEqual(observer.packets, 0)
+        self.assertFalse(observer.first_packet.is_set())
+
+    def test_timing_counts_only_valid_selected_peer_requests(self):
+        timing = capture.TimingResponder(HOST)
+        transport = SimpleNamespace(sendto=Mock())
+        timing.connection_made(transport)
+        request = b'\x80\xd2' + bytes(22) + b'12345678'
+        timing.datagram_received(request, ('127.0.0.2', 12345))
+        timing.datagram_received(b'\x80\xd2', (HOST, 12345))
+        timing.datagram_received(bytes(32), (HOST, 12345))
+        self.assertEqual((timing.requests, timing.replies), (0, 0))
+        timing.datagram_received(request, (HOST, 12345))
+        self.assertEqual((timing.requests, timing.replies), (1, 1))
+        reply, peer = transport.sendto.call_args.args
+        self.assertEqual(peer, (HOST, 12345))
+        self.assertEqual(reply[8:16], request[24:32])
+        self.assertEqual(len(reply), 32)
 
 
 class FakeSession:
@@ -205,11 +277,39 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(report["result"], "audio_received_unverified")
             self.assertFalse(report["homepod_microphone_verified"])
             self.assertEqual(report["frames"], 4)
+            self.assertEqual(report["data_datagrams"], 2)
+            self.assertEqual(report["payload_types"], {'100': 2})
             with wave.open(str(path), "rb") as recording:
                 self.assertEqual((recording.getnchannels(), recording.getsampwidth(), recording.getframerate()),
                                  (1, 2, 16000))
                 self.assertEqual(recording.readframes(4), struct.pack("<hhhh", 1, -2, 1, -2))
             self.assertTrue(session.closed)
+
+    async def test_realtime_profile_records_only_its_payload_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'realtime.wav'
+            session = FakeSession(packets=(rtp(payload_type=96),))
+            profile = capture.PROFILES['realtime-telephony']
+            report = await capture.capture(session, profile, path, 0.001)
+            self.assertEqual(report['payload_types'], {'96': 1})
+            self.assertEqual(report['frames'], 2)
+
+    async def test_wrong_payload_type_cannot_create_wav(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'absent.wav'
+            session = FakeSession(packets=(rtp(payload_type=96),))
+            report = await capture.capture(session, PROFILE, path, 0.001, first_packet_timeout=0.001)
+            self.assertEqual(report['error']['code'], 'no_audio')
+            self.assertEqual(report['data_datagrams'], 1)
+            self.assertEqual(report['ignored_datagrams'], 1)
+            self.assertFalse(path.exists())
+
+    async def test_observation_report_contains_timing_positive_control(self):
+        session = FakeSession(packets=(rtp(),))
+        session.timing = SimpleNamespace(requests=3, replies=3)
+        report = await capture.capture(session, PROFILE, None, 0.001, observe_only=True)
+        self.assertEqual((report['timing_requests'], report['timing_replies']), (3, 3))
+        self.assertFalse(report['homepod_microphone_verified'])
 
     async def test_no_audio_creates_no_wav(self):
         with tempfile.TemporaryDirectory() as directory:

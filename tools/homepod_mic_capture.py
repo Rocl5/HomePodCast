@@ -32,14 +32,15 @@ class InputProfile:
     sample_rate: int = 16000
     channels: int = 1
     audio_format: int = 0x10  # AirPlay PCM 16 kHz, mono, signed 16-bit.
+    payload_type: int = 96
 
 
 # MainAudio + input + telephony/speechRecognition is documented for CarPlay.
 # The type-96 variant tests whether HomePod exposes input on its realtime path.
 # Neither assumption is established for a stock HomePod. Do not auto-cycle them.
 PROFILES = {
-    "main-telephony": InputProfile(100, "telephony"),
-    "main-speech": InputProfile(100, "speechRecognition"),
+    "main-telephony": InputProfile(100, "telephony", payload_type=100),
+    "main-speech": InputProfile(100, "speechRecognition", payload_type=100),
     "realtime-telephony": InputProfile(96, "telephony"),
 }
 
@@ -116,12 +117,14 @@ def input_confirmation(status, body, profile, observe_only=False):
         return exc.code
 
 
-def pcm_from_rtp(packet, expected_payload_type=96):
-    """Validate RTP v2, skip CSRC/extensions/padding, return L16 as WAV LE."""
+def parse_rtp(packet):
+    """Parse candidate RTP without assuming a codec."""
     if len(packet) < 12 or packet[0] >> 6 != 2:
         raise ValueError("Not an RTP v2 audio packet")
-    if packet[1] & 0x7F != expected_payload_type:
-        raise ValueError("Different RTP payload type")
+    # RFC 5761 reserves this overlapping range for RTCP when multiplexed.
+    # A control packet is not candidate audio, even if its length looks valid.
+    if 192 <= packet[1] <= 223:
+        raise ValueError("RTCP or ambiguous control packet")
     offset = 12 + (packet[0] & 15) * 4
     if len(packet) < offset:
         raise ValueError("Truncated CSRC list")
@@ -130,6 +133,8 @@ def pcm_from_rtp(packet, expected_payload_type=96):
             raise ValueError("Truncated RTP extension")
         words = struct.unpack_from("!H", packet, offset + 2)[0]
         offset += 4 + words * 4
+    if offset > len(packet):
+        raise ValueError("Truncated RTP extension data")
     end = len(packet)
     if packet[0] & 0x20:
         padding = packet[-1]
@@ -137,11 +142,21 @@ def pcm_from_rtp(packet, expected_payload_type=96):
             raise ValueError("Invalid RTP padding")
         end -= padding
     payload = packet[offset:end]
+    if not payload:
+        raise ValueError("Missing RTP payload")
+    sequence, timestamp, ssrc = struct.unpack_from("!HII", packet, 2)
+    return packet[1] & 0x7F, sequence, timestamp, ssrc, payload
+
+
+def pcm_from_rtp(packet, expected_payload_type=96):
+    """Validate RTP v2 and the negotiated payload type; return L16 as WAV LE."""
+    payload_type, sequence, timestamp, ssrc, payload = parse_rtp(packet)
+    if payload_type != expected_payload_type:
+        raise ValueError("Different RTP payload type")
     if not payload or len(payload) % 2:
         raise ValueError("Missing or incomplete 16-bit PCM")
     pcm = bytearray(len(payload))
     pcm[0::2], pcm[1::2] = payload[1::2], payload[0::2]
-    sequence, timestamp, ssrc = struct.unpack_from("!HII", packet, 2)
     return sequence, timestamp, ssrc, bytes(pcm)
 
 
@@ -164,6 +179,9 @@ class PcmRecorder(asyncio.DatagramProtocol):
         self.timestamp = None
         self.last_frames = None
         self.ssrc = None
+        self.datagrams = 0
+        self.byte_count = 0
+        self.payload_types = {}
 
     def datagram_received(self, packet, peer):
         if not self.enabled or self.failure:
@@ -171,8 +189,10 @@ class PcmRecorder(asyncio.DatagramProtocol):
         if ipaddress.ip_address(peer[0]) != self.host:
             self.ignored += 1
             return
+        self.datagrams += 1
+        self.byte_count += len(packet)
         try:
-            seq, timestamp, ssrc, pcm = pcm_from_rtp(packet)
+            seq, timestamp, ssrc, pcm = pcm_from_rtp(packet, self.profile.payload_type)
         except ValueError:
             self.ignored += 1
             return
@@ -199,6 +219,8 @@ class PcmRecorder(asyncio.DatagramProtocol):
             self.sequence, self.timestamp, self.ssrc = seq, timestamp, ssrc
             self.frames += self.last_frames
             self.packets += 1
+            key = str(self.profile.payload_type)
+            self.payload_types[key] = self.payload_types.get(key, 0) + 1
         except (OSError, CaptureError, wave.Error) as exc:
             self.failure = exc
             self.enabled = False
@@ -225,12 +247,28 @@ class RtpObserver(asyncio.DatagramProtocol):
         self.first_packet = asyncio.Event()
         self.packets = 0
         self.frames = 0
+        self.datagrams = 0
+        self.byte_count = 0
+        self.payload_types = {}
+        self.ignored = 0
 
     def datagram_received(self, packet, peer):
-        if (self.enabled and ipaddress.ip_address(peer[0]) == self.host
-                and len(packet) >= 12 and packet[0] >> 6 == 2 and packet[1] & 0x7F == 96):
-            self.packets += 1
-            self.first_packet.set()
+        if not self.enabled:
+            return
+        if ipaddress.ip_address(peer[0]) != self.host:
+            self.ignored += 1
+            return
+        self.datagrams += 1
+        self.byte_count += len(packet)
+        try:
+            payload_type, *_ = parse_rtp(packet)
+        except ValueError:
+            self.ignored += 1
+            return
+        self.packets += 1
+        key = str(payload_type)
+        self.payload_types[key] = self.payload_types.get(key, 0) + 1
+        self.first_packet.set()
 
     def close(self):
         self.enabled = False
@@ -239,6 +277,8 @@ class RtpObserver(asyncio.DatagramProtocol):
 class TimingResponder(asyncio.DatagramProtocol):
     def __init__(self, host):
         self.host = ipaddress.ip_address(host)
+        self.requests = 0
+        self.replies = 0
 
     def connection_made(self, transport):
         self.transport = transport
@@ -246,9 +286,11 @@ class TimingResponder(asyncio.DatagramProtocol):
     def datagram_received(self, data, peer):
         if ipaddress.ip_address(peer[0]) != self.host or len(data) < 32 or data[1] & 127 != 0x52:
             return
+        self.requests += 1
         stamp = int((time.time() + 2208988800) * 2**32) & (2**64 - 1)
         reply = bytes([data[0], 0xD3]) + struct.pack("!HI", 7, 0)
         self.transport.sendto(reply + data[24:32] + struct.pack("!QQ", stamp, stamp), peer)
+        self.replies += 1
 
 
 class AirPlayInputSession:
@@ -262,6 +304,7 @@ class AirPlayInputSession:
         self.transports = []
         self.session_started = False
         self.trace = []
+        self.timing = None
 
     async def exchange(self, method, body=None):
         reply = await asyncio.wait_for(self.rtsp.exchange(method, body=body, allow_error=True), 8)
@@ -292,7 +335,8 @@ class AirPlayInputSession:
 
         loop = asyncio.get_running_loop()
         endpoints = []
-        for protocol in (TimingResponder(self.host), recorder, asyncio.DatagramProtocol()):
+        self.timing = TimingResponder(self.host)
+        for protocol in (self.timing, recorder, asyncio.DatagramProtocol()):
             transport, _ = await loop.create_datagram_endpoint(
                 lambda protocol=protocol: protocol, local_addr=(self.connection.local_ip, 0)
             )
@@ -406,6 +450,11 @@ async def capture(session, profile, path, seconds, first_packet_timeout=5, obser
                       observation_only=observe_only,
                       recording_created=bool(not observe_only and recorder.packets),
                       partial_recording=bool(not observe_only and recorder.packets and report["result"] == "failed"))
+        report.update(data_datagrams=recorder.datagrams, data_bytes=recorder.byte_count,
+                      payload_types=recorder.payload_types, ignored_datagrams=recorder.ignored)
+        timing = getattr(session, "timing", None)
+        report.update(timing_requests=timing.requests if timing else 0,
+                      timing_replies=timing.replies if timing else 0)
     return report
 
 

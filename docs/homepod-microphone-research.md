@@ -135,6 +135,15 @@ partial WAV on cancellation. This first prototype has no jitter reordering,
 encrypted audio decoder, AAC/Opus decoder, GUI integration or virtual Windows
 microphone endpoint.
 
+The observer accepts structurally valid candidate RTP with different payload
+types, including 96 and 100; it does not assume that every stream uses 96.
+It rejects malformed packets and multiplexed RTCP. The PCM decoder separately
+requires the profile's payload type (100 for the MainAudio hypotheses; 96 for
+realtime). Observation never treats an unknown codec as PCM. Reports include
+target data-port datagram/byte counts, candidate payload-type counts and timing
+request/reply counts. A timing reply is a positive control for that UDP socket,
+not proof that every audio port or route is reachable.
+
 Tests remain offline/loopback-only:
 
 ```powershell
@@ -176,6 +185,45 @@ implemented recording path now rejects that empty reply before RECORD. These
 results describe these specific requests only, not every Apple call protocol.
 To proceed beyond these hypotheses, the missing artifact is a known-working
 HomePod microphone/call negotiation trace or equivalent protocol implementation.
+
+### Further physical-device tests after playback was disconnected
+
+At 15:46–15:47 (UTC+8), the corrected observer was tested with two additional
+request shapes. These were diagnostic hypotheses, not supported recording
+profiles. Each sent `input=true`; both observed for 12 seconds after RECORD.
+
+| Request | Input SETUP | RECORD / teardown | Target data-port packets | Timing requests / replies |
+| --- | --- | --- | --- | --- |
+| Realtime 96, speechRecognition, PCM 44.1 kHz stereo | 200, stream 96 without input/format confirmation | 200 / 200 | 0 | 8 / 8 |
+| Main 100, telephony, PCM 44.1 kHz stereo | 200, empty body | 200 / 200 | 0 | 7 / 7 |
+
+The second row used a separate diagnostic harness to observe after an empty
+SETUP, without relaxing the production recording guard. No payload was decoded
+or WAV created. Earlier bounded trials also tried 48 kHz PCM and AAC-ELD request
+shapes; none produced inbound audio. Some type-96 trials returned 400, so these
+experiments do not establish a complete format compatibility matrix.
+
+A separate transient-authenticated AirPlay data stream (type 130) successfully
+exchanged encrypted MediaRemote device information. The receiver identified
+`AudioAccessory6,1` and advertised last message type 139. Two bounded
+`GET_VOICE_INPUT_DEVICES` queries, including the explicit empty protobuf extension
+31 and observing responses without identifiers, received no voice-device reply.
+A subsequent generic heartbeat **did** receive its matching response. This
+distinguishes a functioning control transport from an unanswered voice query;
+it does not establish that this MediaRemote message can expose physical HomePod
+microphones. No recording-state or voice-upload command was sent.
+
+Relevant implementation and schema references:
+
+- <https://github.com/postlund/pyatv/blob/v0.18.0/pyatv/protocols/airplay/ap2_session.py>
+- <https://github.com/postlund/pyatv/blob/v0.18.0/pyatv/protocols/airplay/mrp_connection.py>
+- <https://github.com/JarekToro/bunatv/blob/main/src/protocols/mrp/protobuf/messages/audio/GetVoiceInputDevicesMessage.proto>
+- <https://www.rfc-editor.org/rfc/rfc5761#section-4>
+
+These additional tests still leave the microphone milestone unsolved. They
+provide no measured microphone latency, no usable HomePod recording and no
+Windows input device. The 67 passing offline tests verify software behavior with
+synthetic packets only.
 
 ## 当前状态 — 2026-11-14
 
@@ -248,6 +296,12 @@ WAV 和 JSON 文件路径，不需要系统安装或修改 PATH。
 当前没有抖动重排、加密音频/AAC/Opus 解码、GUI 集成或 Windows 虚拟麦克风端点。
 全部离线测试命令见上方，不连接真实音箱。
 
+观察器不再把所有流都假定为 RTP 类型 96，可统计包括 96、100 在内的不同候选类型，
+并拒绝结构损坏的数据包及复用的 RTCP。PCM 解码仍单独校验配置指定的类型：MainAudio
+假设使用 100，实时流使用 96，不将未知编码当作 PCM。报告增加目标数据端口的包数、
+字节数、候选 RTP 类型以及时钟请求/回复计数。收到时钟请求只能确认对应 UDP 路径，
+不能据此断言所有音频端口或传输路径均畅通。
+
 ### 真机观察 — 2026-11-14
 
 电脑连接音箱所在 Wi-Fi 后，通过 mDNS 找到型号 `AudioAccessory6,1`，广播软件版本
@@ -269,3 +323,27 @@ WAV 和 JSON 文件路径，不需要系统安装或修改 PATH。
 
 以上只描述这些具体请求，不能排除所有苹果通话协议。继续打通所缺的是已知可工作的
 HomePod 麦克风/通话协商抓包或等价协议实现。
+
+### 断开播放后的进一步真机测试
+
+15:46–15:47（UTC+8），修正后的观察器再次测试了两种诊断请求。它们都明确发送
+`input=true`，在 RECORD 后监听 12 秒，但并非已获支持的录音配置。
+
+| 请求 | 输入 SETUP | RECORD / 清理 | 目标音频端口数据包 | 时钟请求 / 回复 |
+| --- | --- | --- | --- | --- |
+| 实时 96，speechRecognition，44.1 kHz 双声道 PCM | 200，仅返回流 96，未确认输入/格式 | 200 / 200 | 0 | 8 / 8 |
+| Main 100，telephony，44.1 kHz 双声道 PCM | 200，正文为空 | 200 / 200 | 0 | 7 / 7 |
+
+第二项用独立诊断脚本在空 SETUP 回复后继续观察，没有放宽正式录音路径的保护条件。
+两项均未解码负载、未创建 WAV。此前还做过有时限的 48 kHz PCM、AAC-ELD 请求测试，
+也没有收到音频；部分实时流请求返回 400，不能把这些测试当作完整的格式兼容性表。
+
+另一条临时鉴权后的 AirPlay 数据通道（type 130）成功交换了加密的 MediaRemote
+设备信息。回复确认型号 `AudioAccessory6,1`、最大消息类型 139。两种
+`GET_VOICE_INPUT_DEVICES` 查询都明确包含空 protobuf 扩展 31，并检查了没有标识符
+的响应，但没有收到语音设备回复；随后发送的普通心跳则收到了对应回复。这只能说明
+控制传输能工作、语音查询没有响应，不能证明该 MediaRemote 消息能导出 HomePod
+实体麦克风。没有发送录音状态或语音上传命令；实现及协议参考见英文段落。
+
+进一步测试仍未解决麦克风会话问题，没有可用的 HomePod 录音、Windows 输入设备或
+可测量的麦克风延迟。67 项离线测试通过，只验证了模拟数据下的软件行为。
