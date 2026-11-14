@@ -4,8 +4,11 @@
 
 **This fork does not record the HomePod microphone.** This is a feasibility
 investigation for a second-generation HomePod, not a working recording feature.
-Read-only metadata queries succeeded against one physical HomePod; no microphone
-audio has been received and no authenticated microphone session was attempted.
+Read-only metadata queries and transient HAP authentication succeeded against one
+physical HomePod. Experimental input-stream negotiation has been attempted, but
+no microphone stream has been confirmed and no microphone audio received.
+The standalone prototype can record synthetic negotiated PCM in offline tests;
+it is not a working microphone feature in the Windows app.
 
 Baseline: upstream `qiyinxi/HomePodCast`, commit
 `9dd5b63ca6ca59448c922b25ba09354f8dab37d0`.
@@ -68,20 +71,75 @@ Offline tests, including an ephemeral loopback-only mock receiver:
 python -B -m unittest discover -s tools/tests -p test_homepod_mic_probe.py -v
 ```
 
-## What a working implementation still needs
+## Milestones toward a working implementation
 
-1. Confirm the HomePod's IP, advertised AirPlay port and audioOS build, and
-   inspect the real metadata report. Do not substitute fixture data for hardware.
-2. Identify an authenticated microphone session and its transport. If this
+1. **Done:** confirm the HomePod's IP, advertised AirPlay port and audioOS build,
+   and inspect real metadata. Fixture data was not substituted for hardware.
+2. **Not solved:** identify an authenticated microphone session and its transport. If this
    requires reproducing Apple's call handoff, investigate that separately from
    the existing playback sender; do not invent an endpoint or capability bit.
 3. Demonstrate actual HomePod-originated audio: controlled speech, tap tests and
    Windows-input isolation must distinguish it from a PC mic or playback echo.
-4. Only then implement decoding, jitter buffering, WAV recording and clean stop.
+4. **Partly implemented offline:** PCM decoding, WAV recording and clean stop;
+   these must be connected to a verified input session. Jitter buffering remains.
    Using it in other Windows apps additionally needs a virtual input endpoint;
    writing a WAV file alone does not create a Windows microphone device.
 
 No completion date or recording support is claimed until step 3 passes.
+
+## Implemented: experimental input-session and recording prototype
+
+`tools/homepod_mic_capture.py` implements transient HAP authentication, encrypted
+control, NTP timing, the encrypted event channel, input SETUP hypotheses, RTP
+parsing, PCM16 WAV writing and session teardown. It never opens a Windows audio
+input. It checks the exact device model and idle status before authentication
+and again before session SETUP. It makes no volume changes or outbound audio.
+
+Create a separate Python environment; no system install or PATH change is needed:
+
+```powershell
+python -m venv .git/mic-venv
+.git/mic-venv/Scripts/python.exe -m pip install -r tools/requirements-mic-research.txt
+.git/mic-venv/Scripts/python.exe tools/homepod_mic_capture.py --host <HOMEPOD_IP> --profile main-telephony --output .git/input-attempt.wav --report .git/input-attempt.json --seconds 10
+```
+
+Use fresh output/report paths for every run. The profiles are **hypotheses**:
+`main-telephony` (100/telephony), `main-speech` (100/speechRecognition), and
+`realtime-telephony` (96/telephony). All explicitly request `input=true` and PCM
+16-bit mono at 16 kHz. MainAudio input is described for CarPlay, not established
+for HomePod. References:
+
+- <https://github.com/maxim-smirnov/mhi2-carplay-cluster/blob/main/docs/audio/CALL_AND_SIRI_ROUTING.md>
+- <https://github.com/postlund/pyatv/blob/master/pyatv/protocols/airplay/auth/hap_transient.py>
+
+The recording path requires the returned stream to explicitly confirm direction
+and PCM format. A missing echo is **inconclusive**, not proof of no microphone.
+For a returned stream lacking direction/format confirmation, observation mode can
+start the session and count candidate RTP without saving or decoding its payload:
+
+```powershell
+.git/mic-venv/Scripts/python.exe tools/homepod_mic_capture.py --host <HOMEPOD_IP> --profile realtime-telephony --observe-only --report .git/input-observation.json --seconds 10
+```
+
+Observation cannot bypass a rejected SETUP, a missing stream or the wrong stream
+type. Neither mode claims that observed packets come from a microphone. The
+report always leaves `homepod_microphone_verified=false`. Exit 0 means synthetic
+or real negotiated audio was saved, or candidate RTP was observed in observation
+mode; it never certifies microphone support. Exit 2 reports a failed experiment.
+
+No WAV is created for failed negotiation or a no-audio timeout. For supported
+PCM only, valid packets from the selected peer create an exclusive WAV. It
+handles RTP extensions, padding, duplicates and sequence/timestamp wrap, stops
+on loss/discontinuity instead of inserting fabricated samples, and finalizes any
+partial WAV on cancellation. This first prototype has no jitter reordering,
+encrypted audio decoder, AAC/Opus decoder, GUI integration or virtual Windows
+microphone endpoint.
+
+Tests remain offline/loopback-only:
+
+```powershell
+python -B -m unittest discover -s tools/tests -p 'test_homepod_mic*.py' -v
+```
 
 ## Hardware observation — 2026-11-14
 
@@ -99,14 +157,32 @@ not establish microphone capture support.
 
 The actual device name, addresses, identifiers, raw plist, and network discovery
 records are not committed. Local diagnostic reports remain under `.git/`.
-The Windows capture implementation has not been changed or tested as part of
-this research; only the standalone Python probe and its tests were added.
+The existing Windows capture implementation has not been changed or tested as
+part of this research. The new backend is an isolated Python experiment.
+
+Authenticated follow-up, on the same device/build:
+
+| Hypothesis | Session SETUP | Input SETUP | Result |
+| --- | --- | --- | --- |
+| Main telephony (100) | 200 | 200, empty body | No input stream allocated; no WAV |
+| Main speech (100) | 200 | 200, empty body | No input stream allocated; no WAV |
+| Realtime telephony (96) | 200 | 200, stream type 96 only | Input/format not confirmed; no WAV |
+| Realtime observation (96) | 200 | 400 on a later attempt | Rejected before observation; no WAV |
+
+Transient authentication and encrypted `/info` worked. All established sessions
+were torn down with status 200. A preliminary type-100 experiment sent RECORD
+after the empty SETUP reply and observed no packets for three seconds; the
+implemented recording path now rejects that empty reply before RECORD. These
+results describe these specific requests only, not every Apple call protocol.
+To proceed beyond these hypotheses, the missing artifact is a known-working
+HomePod microphone/call negotiation trace or equivalent protocol implementation.
 
 ## 当前状态 — 2026-11-14
 
 **这个 fork 尚不能录制 HomePod 自带麦克风。** 当前是二代 HomePod 的可行性研究，
-已成功读取一台真实 HomePod 的设备信息，但没有录到任何 HomePod 麦克风音频，
-也尚未尝试经过鉴权的麦克风会话。
+已成功读取真实 HomePod 的设备信息并完成临时 HAP 鉴权，已尝试输入流协商，
+但没有确认任何麦克风流，也没有录到 HomePod 麦克风音频。独立录音原型可以在
+离线测试中保存模拟协商后的 PCM；Windows 应用尚未获得可用的 HomePod 录音功能。
 基于上方固定提交，检查结果为：
 
 - `MicCapture.cs` 采集的是 Windows 的 WASAPI 录音设备，不是 HomePod 麦克风；
@@ -135,17 +211,42 @@ JSON 报告只选取型号、版本、能力位编号及音频输入相关键的
 都不能单独证明能否使用 HomePod 麦克风。报告始终将麦克风录音能力标为 `unverified`。
 上方测试命令只使用离线数据和本机回环模拟服务，不连接真实音箱。
 
-### 距离真正录音还缺什么
+### 实现进度及剩余问题
 
-1. 确认 IP、AirPlay 端口及 audioOS 版本，取得真实设备信息，不能用模拟数据代替。
-2. 找到并验证经过鉴权的麦克风会话和音频传输通道；若依赖苹果通话接力协议，需要
+1. 已完成：确认 IP、AirPlay 端口及 audioOS 版本，已取得真实设备信息，未用模拟数据代替。
+2. 尚未解决：找到并验证经过鉴权的麦克风会话和音频传输通道；若依赖苹果通话接力协议，需要
    单独研究，不能凭空假设一个接口或能力位。
 3. 通过说话、敲击及隔离电脑输入设备，确认收到的确实是 HomePod 麦克风，而不是
    电脑麦克风或播放回声。
-4. 再实现解码、抖动缓冲、WAV 保存和正常停止。若要让其他 Windows 软件选择它作为
+4. 部分代码已通过离线测试：PCM 解码、WAV 保存和正常停止；仍需接入已验证的输入
+   会话，抖动缓冲尚未实现。若要让其他 Windows 软件选择它作为
    麦克风，还需要虚拟录音端点；保存 WAV 并不会自动创建 Windows 输入设备。
 
 在第 3 步通过前，不承诺录音成功或交付日期。
+
+### 已实现：实验性输入会话及录音原型
+
+`tools/homepod_mic_capture.py` 实现了临时 HAP 鉴权、加密控制连接、NTP 时钟响应、
+加密事件通道、输入流协商尝试、RTP 解析、PCM16 WAV 保存及会话清理。它不读取
+Windows 麦克风，在鉴权前和建立会话前检查目标型号及空闲状态，不改音量，不向音箱
+发送音频。依赖安装和运行命令见上方；使用 `.git/mic-venv` 独立环境，每次使用新的
+WAV 和 JSON 文件路径，不需要系统安装或修改 PATH。
+
+三个配置都是协议假设：`main-telephony`、`main-speech`、`realtime-telephony`。
+均明确请求 `input=true`、16 kHz 单声道 PCM16；前两者借鉴 CarPlay 的 MainAudio
+输入，不能据此假定 HomePod 支持。参考链接见英文段落。
+
+正常录音要求回复明确确认输入方向和 PCM 格式；字段缺失不等于证明设备不支持。
+`--observe-only` 可在收到对应流但未确认输入/格式时启动并只统计候选 RTP，不保存、
+不解码负载；不能绕过 SETUP 拒绝、没有流或流类型不符。两种模式都不能仅凭数据包
+证明是麦克风，报告始终保留 `homepod_microphone_verified=false`。
+
+退出码 0 只表示保存了协商格式的音频或观察到了候选 RTP，并不认证 HomePod 录音
+可用；退出码 2 表示实验失败。协商失败或没有音频时不创建 WAV；支持的 PCM 流只有
+收到目标设备有效数据后才创建文件。支持 RTP 扩展、填充、重复包、序号/时间戳回绕；
+遇到丢包/不连续则停止并保留部分录音，不伪造静音；取消时修正 WAV 文件头。
+当前没有抖动重排、加密音频/AAC/Opus 解码、GUI 集成或 Windows 虚拟麦克风端点。
+全部离线测试命令见上方，不连接真实音箱。
 
 ### 真机观察 — 2026-11-14
 
@@ -158,4 +259,13 @@ JSON 报告只选取型号、版本、能力位编号及音频输入相关键的
 排除所有私有麦克风通道。`OPTIONS` 列出了 `RECORD`，仍不能作为支持录音的证据。
 
 设备名称、地址、标识符、原始 plist 和网络发现记录不提交到仓库；本地诊断报告保存在
-`.git/` 内。这次没有修改或测试 Windows 采集实现，只增加独立 Python 探测工具及测试。
+`.git/` 内。原有 Windows 采集实现没有修改或测试，新增后端是独立 Python 实验。
+
+同一设备/构建的鉴权后测试：两条 type 100 输入请求都返回 200 但正文为空，没有
+分配输入流；type 96 请求曾返回 200 及流类型 96，但没有确认输入/格式，后续观察
+尝试则收到 400，均未创建 WAV。临时鉴权和加密 `/info` 成功，已建立会话的清理
+都返回 200。初步 type 100 实验在空回复后发送过 RECORD，监听三秒没有数据包；
+现有录音路径在空回复后会直接停止，不发送 RECORD。
+
+以上只描述这些具体请求，不能排除所有苹果通话协议。继续打通所缺的是已知可工作的
+HomePod 麦克风/通话协商抓包或等价协议实现。

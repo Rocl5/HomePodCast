@@ -1,0 +1,4 @@
+# Isolated experimental Python backend, not dependencies of the Windows app.
+pyatv==0.18.0
+# pyatv 0.18 passes SRPClientSession's private key positionally; 2.0 breaks that API.
+srptools==1.0.1
