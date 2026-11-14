@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-11-14",
-  "status": "static_analysis_only_no_microphone_audio",
+  "status": "static_analysis_and_physical_authentication_no_microphone_audio",
   "physical_device": {
     "model": "AudioAccessory6,1",
     "build": "24K122",
@@ -25,7 +25,12 @@
       "start_request_encoder": "0x19e4d5400",
       "response_encoder_region": "0x19e4cbf60",
       "container_encoder": "0x19e535da8",
-      "rapport_service_type_getter": "0x19e5366a4"
+      "rapport_service_type_getter": "0x19e5366a4",
+      "start_request_name_witness": "0x19e550450",
+      "name_string_describing_implementation": "0x19e5503f8",
+      "request_prefix_append": "0x19e524c44",
+      "start_request_name": "StartDropInRequest",
+      "state_request_name": "DropInStateRequest"
     },
     "AirPlayReceiver": {
       "version": "1005.13.2.2.0",
@@ -42,8 +47,8 @@
     "container": ["mid", "pid", "p"]
   },
   "remaining_unknowns": [
-    "Verified payload-name convention for each message",
     "Authorized home-member identity provisioning on Windows",
+    "Valid home UUID and successfully authorized DropIn signalling",
     "Physical AudioAccessory6,1 acceptance of user-initiated DropIn",
     "DropIn control-to-call/media integration",
     "Successful microphone media receipt, decoding and latency"
@@ -51,6 +56,9 @@
   "tests": {
     "dropin_constructed_fixtures": 28,
     "existing_microphone_probe_capture": 67,
+    "companion_loopback_crypto_and_routing": 22,
+    "total_offline": 117,
     "physical_microphone_success": false
-  }
+  },
+  "physical_companion_results": "homepod-companion-device-result.json"
 }

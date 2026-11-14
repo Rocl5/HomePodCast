@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-14",
+  "device": {
+    "model": "AudioAccessory6,1",
+    "software": "27.2",
+    "build": "24K122",
+    "companion_port_observed": 49153,
+    "bonjour_pairing_flags": "0x62792",
+    "bonjour_rapport_version": "715.2"
+  },
+  "redactions": ["LAN addresses", "identity fingerprints", "session identifiers"],
+  "unpaired_identity_pair_verify": {
+    "timestamp_utc": "2026-11-14T09:09:14.817212+00:00",
+    "m2_identity_decrypted": true,
+    "m3_fresh_unpaired_identity_sent": true,
+    "m4_tlv_state": 4,
+    "m4_tlv_error": 2,
+    "trusted_controller_authenticated": false
+  },
+  "public_transient_session": {
+    "timestamp_utc": "2026-11-14T09:19:53.621241+00:00",
+    "server_srp_proof_verified": true,
+    "encrypted_system_info_received": true,
+    "homekit_identity_returned": false,
+    "homekit_user_identity_returned": false,
+    "service_types_returned": [],
+    "logical_dropin_rapport_session_started": true,
+    "state_request_identifier": "com.apple.dropin.setup.request.DropInStateRequest",
+    "state_request_required_homeid_omitted": true,
+    "state_response_error_code": 58822,
+    "state_response_error_domain": "RPErrorDomain",
+    "state_response_interpretation": "No request handler; not proof of a specific permission failure",
+    "logical_session_stop_succeeded": true,
+    "persistent_pairing_created": false,
+    "home_membership_authenticated": false
+  },
+  "limits": {
+    "valid_home_uuid_available": false,
+    "valid_authorized_dropin_start_tested": false,
+    "dropin_call_started": false,
+    "microphone_media_received": false,
+    "microphone_latency_measured": false,
+    "working_microphone_backend": false
+  },
+  "post_test_health": {
+    "timestamp_utc": "2026-11-14T09:19:54.074232+00:00",
+    "get_info_status": 200,
+    "options_status": 200
+  }
+}

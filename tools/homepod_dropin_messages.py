@@ -17,6 +17,12 @@ RAPPORT_SERVICE_TYPE = "com.apple.dropin.setup"
 RAPPORT_REQUEST_ID = "com.apple.dropin.setup.request."
 RAPPORT_EVENT_ID = "com.apple.dropin.setup.event."
 IDS_SERVICE = "com.apple.private.alloy.dropin.setup"
+# 27.2 conformance witnesses use String(describing: Self.self); the request
+# sender appends that name to the prefix. Static evidence is not wire success.
+START_REQUEST_PAYLOAD_NAME = "StartDropInRequest"
+STATE_REQUEST_PAYLOAD_NAME = "DropInStateRequest"
+RAPPORT_START_REQUEST_ID = RAPPORT_REQUEST_ID + START_REQUEST_PAYLOAD_NAME
+RAPPORT_STATE_REQUEST_ID = RAPPORT_REQUEST_ID + STATE_REQUEST_PAYLOAD_NAME
 
 
 class MessageError(ValueError):

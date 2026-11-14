@@ -97,7 +97,7 @@ Apple binaries. Hashes and locations are recorded in
   are 0 and 1 respectively. The response contains `sessionid`, `homeid`,
   `devicePseudonym`, `devicePseudonymExpiration`, and optional archived `error`.
 - The outer message dictionary uses `mid`, `pid` and `p`. The Rapport service
-  is `com.apple.dropin.setup`, its request identifier is
+  is `com.apple.dropin.setup`, its request identifier prefix is
   `com.apple.dropin.setup.request.` **including the trailing dot**, and its
   IDS service is `com.apple.private.alloy.dropin.setup`. These are protocol
   identifiers, not HTTP/RTSP endpoints.
@@ -127,7 +127,7 @@ Binary locations retained for reproduction:
 `tools/homepod_dropin_messages.py` implements the recovered start-request,
 message-envelope and response dictionary handling. Its 28 constructed-fixture
 tests pass; the existing 67 microphone-probe/capture tests still pass. The
-module does **not** infer an unverified payload-name convention, open a socket,
+module does **not** open a socket,
 authenticate a home member, serialize an OPACK frame, start a call, or capture
 audio. The tests are offline schema tests, not successful device recordings.
 
@@ -143,6 +143,74 @@ The physical HomePod was reachable again in this pass (`GET /info` and
 `OPTIONS` returned 200 at 08:24 UTC). No new DropIn or call session was sent.
 No HomePod microphone audio has been received, so recording and microphone
 latency remain unverified.
+
+## Companion transport and physical tests — 2026-11-14
+
+`tools/homepod_companion_probe.py` now implements a bounded Companion client:
+unicast discovery on the selected interface, OPACK framing, X25519/Ed25519
+pair-verify with an explicitly supplied pinned identity, public transient SRP,
+server-proof verification, ChaCha20-Poly1305 framing with header AAD, encrypted
+system information, and a routing-only DropIn state probe with session cleanup.
+These are control-channel functions, **not a working recording backend**.
+
+Physical second-generation HomePod results, 09:09–09:20 UTC:
+
+- Unicast discovery found Companion port 49153, `rpFl=0x62792` and `rpVr=715.2`.
+  The earlier multicast miss was not evidence that Companion was absent.
+- Pair-verify M2 could be decrypted; a fresh, unpaired controller identity was
+  rejected in M4 with TLV state 4 / error 2 (authentication).
+- A different path recovered from `RPConnection`'s public pairing branch [15]
+  **worked**: `_pwTy=0`, transient flag `0x10`, SRP fixed public value `public`,
+  and `ClientEncrypt-main` / `ServerEncrypt-main` stream keys. The received
+  server proof was verified. No M5/M6 persistent credential exchange was sent.
+  Thus it would be incorrect to claim that all Companion access requires an
+  existing paired identity. This public guest session is not home membership.
+- Encrypted `_systemInfo` returned the correct model but no HomeKit identity,
+  HomeKit user identity, or service list. A logical Rapport session for
+  `com.apple.dropin.setup` could be opened. A `DropInStateRequest` deliberately
+  **omitting required `homeid`** returned `RPErrorDomain`, code **58822**.
+  The library's protocol documentation associates this with no request handler
+  [16]. This is not a valid DropIn start test or proof of a particular permission
+  rejection: service routing, feature state and authorization remain distinct.
+- The final logical session closed successfully; the TCP connection then closed.
+  Some earlier full-range local session IDs produced `Session not found` on
+  cleanup. Restricting the local half to 31 bits yielded successful cleanup;
+  the precise server-side cause is not established. Post-test AirPlay `/info`
+  and `OPTIONS` both returned 200. No DropIn call or audio session was started.
+
+The name convention was also resolved statically: a conformance witness at
+`0x19e550450` calls `String(describing: Self.self)` through `0x19e5503f8` for
+`StartDropInRequest`; `0x19e524c44` appends the name to the request prefix. The
+start request identifier is consequently
+`com.apple.dropin.setup.request.StartDropInRequest`. This static conclusion
+has not been validated by an accepted, authorized start on the physical device.
+
+Reproduce the public diagnostic from the repository root, using actual target
+and local Wi-Fi IPv4 addresses and a **new report filename**:
+
+```powershell
+.git/mic-venv/Scripts/python.exe -B tools/homepod_companion_probe.py --host <HOMEPOD_IP> --local-ip <WINDOWS_WIFI_IP> --public-transient --probe-dropin-route --report .git/companion-result.json
+.git/mic-venv/Scripts/python.exe -B -m unittest discover -s tools/tests -p 'test_homepod_*.py' -q
+```
+
+Exit 3 means the routing-only diagnostic finished without establishing usable
+DropIn access; exit 2 means a handshake or cleanup error. Omitting
+`--probe-dropin-route` performs only public encrypted system-info diagnostics.
+`--test-unpaired-identity` is a separate single-attempt identity diagnostic;
+`--credentials-file` accepts an existing identity explicitly provided by its
+owner and does not obtain or provision that identity. The tool does not search
+profiles or keychains. Credential JSON has exactly four hex fields:
+`server_identifier`, `server_public_key`, `client_identifier`,
+`client_private_key` (32-byte Ed25519 seed). Keep such files private.
+
+All **117** offline tests pass, including **22** new Companion tests. They cover
+cryptographic signatures and proofs, wrong pinned identities, nonce reuse,
+fragmented and oversized frames, actual OPACK integer subclasses, encryption,
+and cleanup after a state-request timeout. The independently recorded physical
+outcomes are in [the sanitized device result](homepod-companion-device-result.json).
+No valid home UUID, authorized DropIn call, received microphone media, decoded
+recording or measured microphone latency is available. Home-member identity
+provisioning and the DropIn-to-call/media integration remain unimplemented.
 
 ## 中文：Check In / DropIn 调研
 
@@ -210,7 +278,7 @@ iPad 或 Apple Watch，成员可进入查看情况并与家中人员通话；Hom
 - 请求字典字段为 `homeid`、`sessiontype`，两种类型的标签分别为 0、1。响应有
   `sessionid`、`homeid`、`devicePseudonym`、`devicePseudonymExpiration` 及可选的
   归档错误数据 `error`；外层消息使用 `mid`、`pid`、`p`。
-- Rapport 服务为 `com.apple.dropin.setup`，请求标识为
+- Rapport 服务为 `com.apple.dropin.setup`，请求标识前缀为
   `com.apple.dropin.setup.request.`（**保留结尾的点**），IDS 服务为
   `com.apple.private.alloy.dropin.setup`。这些是协议标识，不是 HTTP/RTSP 接口。
 - 同构建 mini 的 AirPlay 接收端分派 96、103、110、120、130 类型；100 会进入
@@ -220,8 +288,8 @@ iPad 或 Apple Watch，成员可进入查看情况并与家中人员通话；Hom
   iOS 18.2 方法体可直接看到家庭和 DropIn 权限检查，远程传输还检查远程访问权限。[11]
 
 代码新增 `tools/homepod_dropin_messages.py`，实现已确认的请求、外层消息和响应字典
-处理，28 项构造样本测试通过；原有 67 项麦克风探测/采集测试仍通过。它没有猜测
-尚未确认的 payload 名称规则，没有网络连接、OPACK 帧编码、家庭身份认证、拨号或
+处理，28 项构造样本测试通过；原有 67 项麦克风探测/采集测试仍通过。该字典模块没有
+网络连接、OPACK 帧编码、家庭身份认证、拨号或
 录音能力；测试通过不能当作真机录音成功。
 
 Rustpush 已有真实 IDS/FaceTime 建连、SRTP 和接收媒体帧处理，但检查的代码没有
@@ -232,6 +300,52 @@ macOS 的活跃通话进程，不是 Windows 直连 HomePod 麦克风 [13]。两
 这轮北京时间 16:24 的只读复查中，二代真机的 `/info`、`OPTIONS` 均返回 200，设备
 仍可访问；没有发送新的 DropIn/通话会话。目前依旧未收到 HomePod 麦克风音频，
 不能报告录音完成，也不能提供实测麦克风延迟。
+
+### Companion 通道实现与真机测试 — 2026-11-14
+
+新增 `tools/homepod_companion_probe.py`，实现指定网卡的单播发现、OPACK 帧、固定身份
+密钥验证、X25519/Ed25519、公共临时 SRP、服务端证明校验、带帧头认证的
+ChaCha20-Poly1305 加密、系统信息查询，以及带清理的 DropIn 只读路由诊断。
+这些是控制通道实现，**仍不是可用录音后端**。
+
+北京时间 17:09–17:20 对这台二代 HomePod 的实际结果：
+
+- 定向查询找到 Companion 端口 49153，`rpFl=0x62792`、`rpVr=715.2`；此前组播扫描
+  漏掉服务，不能据此判定它不存在。
+- 可解密 Pair-Verify M2；新生成、未配对的控制端身份在 M4 收到 state 4、error 2，
+  即身份认证失败。
+- 继续检查 `RPConnection` 的公共配对分支 [15] 后，**另一条路径已实际连通**：
+  `_pwTy=0`、临时标志 `0x10`、SRP 固定公共值 `public`，再派生 Companion 加密
+  密钥。已校验收到的服务端证明，没有发送持久配对的 M5/M6。因此不能说所有
+  Companion 访问都必须已有配对身份；但公共访客会话不等于家庭成员身份。
+- 加密 `_systemInfo` 返回正确型号，没有家庭设备身份、家庭用户身份或服务列表。
+  可以建立 `com.apple.dropin.setup` 逻辑会话，但故意**省略必填 `homeid`** 的
+  `DropInStateRequest` 返回 `RPErrorDomain / 58822`。协议库文档将其解释为没有
+  请求处理器 [16]。这不是有效的 DropIn 启动测试，也不能直接当作某项权限被拒的
+  证明；路由、功能状态、身份授权仍需区分。
+- 最后一次逻辑会话正常关闭，随后关闭 TCP；较早使用完整 32 位随机本地会话 ID
+  时，部分清理请求得到 `Session not found`。限制本地部分为 31 位后清理成功，
+  尚未确定服务端具体原因。测试后 AirPlay `/info`、`OPTIONS` 都返回 200。
+  没有启动 DropIn 通话或音频会话。
+
+静态分析也确认了名称规则：`0x19e550450` 经 `0x19e5503f8` 对请求类型调用
+`String(describing: Self.self)`，`0x19e524c44` 将名称追加到请求前缀；因此启动标识
+为 `com.apple.dropin.setup.request.StartDropInRequest`。这是静态结论，尚未获得
+二代真机接受的、经过授权的启动响应。
+
+复现命令见英文节；须填实际音箱 IP、Windows Wi-Fi IP，并使用新的报告文件名。
+退出码 3 表示路由诊断完成但未建立可用 DropIn 权限，2 表示握手或清理错误。
+去掉 `--probe-dropin-route` 只查询公共加密系统信息；`--test-unpaired-identity`
+单独执行一次未配对身份测试；`--credentials-file` 仅接受所有者明确提供的既有身份，
+不负责获取或注册身份，也不搜索用户配置或钥匙串。凭据文件的四个十六进制字段为
+`server_identifier`、`server_public_key`、`client_identifier`、`client_private_key`
+（32 字节 Ed25519 种子），应私密保存。
+
+共 **117** 项离线测试通过，其中 Companion 新增 **22** 项，涵盖签名与证明、错误
+固定身份、随机数重复使用防护、分段与超大帧、真实 OPACK 整数子类、加密，以及
+状态请求超时后的清理。真机结果另存于 [脱敏报告](homepod-companion-device-result.json)。
+目前仍没有有效家庭 UUID、获授权的 DropIn 通话、麦克风媒体包、解码录音或实测
+麦克风延迟；Windows 家庭身份注册和 DropIn 到通话媒体的对接仍未实现。
 
 ## Sources / 来源
 
@@ -249,3 +363,5 @@ macOS 的活跃通话进程，不是 Windows 直连 HomePod 麦克风 [13]。两
 12. Rustpush, inspected commit `b3c96c23e1aae78d1229ebaccb12027624f1eaff`: <https://github.com/OpenBubbles/rustpush/tree/b3c96c23e1aae78d1229ebaccb12027624f1eaff>; media implementation: `src/avconference.rs`, signalling: `src/facetime.rs`.
 13. OpenClaw FaceTime, inspected commit `0864ed3d4547203eb16f31c0d18def8c4338cc42`: <https://github.com/openclaw/openclaw-facetime/tree/0864ed3d4547203eb16f31c0d18def8c4338cc42>.
 14. Apple restore image, AudioAccessory5,1 27.2 / 24K122: <https://updates.cdn-apple.com/2026FallFCS/4ee5d3c9-158b-4ad9-95b4-6cfa9ac0f0d4/AudioAccessory5,1_27.2_24K122_Restore.ipsw>.
+15. Public iOS 18.2 `RPConnection` method bodies, same pinned research repository: <https://github.com/EthanArbuckle/iPhone17-1_18.2_22C152_Restore/blob/e26ed4563f78871c59d2d96856756a65d62517e5/System/Library/PrivateFrameworks/Rapport.framework/RPConnection.m>.
+16. pyatv protocol documentation, Companion framing and no-handler errors: <https://pyatv.dev/documentation/protocols/>.
