@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-14",
+  "status": "static_analysis_only_no_microphone_audio",
+  "physical_device": {
+    "model": "AudioAccessory6,1",
+    "build": "24K122",
+    "airplay_version": "1005.13.2"
+  },
+  "firmware_analyzed": {
+    "model": "AudioAccessory5,1",
+    "version": "27.2",
+    "build": "24K122",
+    "same_model_as_physical_device": false,
+    "root_filesystem_member": "141-11453-175.dmg.aea",
+    "dyld_cache": "System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
+    "analysis_tools": ["ipsw 3.1.745", "7-Zip 26.06", "Python 3.12.9"]
+  },
+  "libraries": {
+    "DropInCore": {
+      "version": "169.0.0.0.0",
+      "extracted_file_sha256": "c562239c8e0cd88128b3ac8167dffb210ecd1ba47355ae013efd94304dc224d6",
+      "start_request_type_descriptor": "0x19e56f1c8",
+      "session_type_descriptor": "0x19e56f1f0",
+      "start_request_encoder": "0x19e4d5400",
+      "response_encoder_region": "0x19e4cbf60",
+      "container_encoder": "0x19e535da8",
+      "rapport_service_type_getter": "0x19e5366a4"
+    },
+    "AirPlayReceiver": {
+      "version": "1005.13.2.2.0",
+      "extracted_file_sha256": "0914b7fe4dfb7de8d96373d6d836b51abe91f0e23aae97ec1253ef5d0310a174",
+      "session_setup": "0x1b4779770",
+      "stream_type_96_103_dispatch": "0x1b477a720",
+      "unsupported_stream_branch": "0x1b477aaec",
+      "recognized_stream_types": [96, 103, 110, 120, 130]
+    }
+  },
+  "recovered_dictionary_fields": {
+    "start_request": ["homeid", "sessiontype"],
+    "start_response": ["sessionid", "homeid", "devicePseudonym", "devicePseudonymExpiration", "error"],
+    "container": ["mid", "pid", "p"]
+  },
+  "remaining_unknowns": [
+    "Verified payload-name convention for each message",
+    "Authorized home-member identity provisioning on Windows",
+    "Physical AudioAccessory6,1 acceptance of user-initiated DropIn",
+    "DropIn control-to-call/media integration",
+    "Successful microphone media receipt, decoding and latency"
+  ],
+  "tests": {
+    "dropin_constructed_fixtures": 28,
+    "existing_microphone_probe_capture": 67,
+    "physical_microphone_success": false
+  }
+}
