@@ -10,6 +10,10 @@ no microphone stream has been confirmed and no microphone audio received.
 The standalone prototype can record synthetic negotiated PCM in offline tests;
 it is not a working microphone feature in the Windows app.
 
+Public-source follow-up identified Apple's Check In / private DropIn framework
+as a separate microphone-session research lead; see
+[the evidence and its limits](homepod-dropin-research.md).
+
 Baseline: upstream `qiyinxi/HomePodCast`, commit
 `9dd5b63ca6ca59448c922b25ba09354f8dab37d0`.
 
@@ -231,6 +235,8 @@ synthetic packets only.
 已成功读取真实 HomePod 的设备信息并完成临时 HAP 鉴权，已尝试输入流协商，
 但没有确认任何麦克风流，也没有录到 HomePod 麦克风音频。独立录音原型可以在
 离线测试中保存模拟协商后的 PCM；Windows 应用尚未获得可用的 HomePod 录音功能。
+公开资料调研新定位到苹果 Check In / 私有 DropIn 框架，具体依据和限制见
+[专项调研](homepod-dropin-research.md)。
 基于上方固定提交，检查结果为：
 
 - `MicCapture.cs` 采集的是 Windows 的 WASAPI 录音设备，不是 HomePod 麦克风；
